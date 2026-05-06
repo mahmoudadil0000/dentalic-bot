@@ -35,6 +35,22 @@ const db = firebase.firestore();
 db.settings({ experimentalForceLongPolling: true });
 const userSessions = {};
 
+async function safeDelete(chatId, messageId) {
+    try {
+        await bot.deleteMessage(chatId, messageId);
+    } catch (e) {}
+}
+
+async function cleanupChat(chatId, keepMessageId = null, range = 40) {
+    if (!keepMessageId) return;
+
+    for (let i = 1; i <= range; i++) {
+        await safeDelete(chatId, keepMessageId - i);
+    }
+}
+
+
+
 const ARABIC_PROVINCES = [
     { id: 'Baghdad', label: 'بغداد' }, { id: 'Basra', label: 'بصرة' }, { id: 'Maysan', label: 'ميسان' },
     { id: 'Dhi Qar', label: 'ذي_قار' }, { id: 'Muthanna', label: 'مثنى' }, { id: 'Al-Qādisiyyah', label: 'قادسية' },
@@ -145,6 +161,8 @@ bot.onText(/\/start/, async (msg) => {
 
             // Send new menu and save its ID
             const sentMsg = await bot.sendMessage(chatId, "اهلا بك في بوت حجز المرضى. إختر احد الازرار:", replyKeyboardOptions);
+            await cleanupChat(chatId, sentMsg.message_id);
+            await cleanupChat(chatId, sentMsg.message_id);
             await userRef.update({
                 lastMessageId: sentMsg.message_id,
                 updatedAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -153,6 +171,8 @@ bot.onText(/\/start/, async (msg) => {
         } else {
             // Create new user
             const sentMsg = await bot.sendMessage(chatId, "اهلا بك في بوت حجز المرضى. إختر احد الازرار:", replyKeyboardOptions);
+            await cleanupChat(chatId, sentMsg.message_id);
+            await cleanupChat(chatId, sentMsg.message_id);
 
             await userRef.set({
                 telegramId: telegramId,
@@ -259,6 +279,7 @@ bot.on('message', async (msg) => {
             }
 
             const sentMsg = await bot.sendMessage(chatId, newText, currentOptions);
+            await cleanupChat(chatId, sentMsg.message_id);
 
             // Update lastMessageId in Firestore
             await userRef.update({
@@ -384,6 +405,8 @@ bot.on('callback_query', async (query) => {
 
         try {
             const sentMsg = await bot.sendMessage(chatId, "اهلا بك في بوت حجز المرضى. إختر احد الازرار:", replyKeyboardOptions);
+            await cleanupChat(chatId, sentMsg.message_id);
+            await cleanupChat(chatId, sentMsg.message_id);
             const userRef = db.collection('telegram_users').doc(telegramId);
             await userRef.update({
                 lastMessageId: sentMsg.message_id,
@@ -779,12 +802,15 @@ async function showPatientResult(chatId) {
         mediaGroup.forEach(m => session.resultMessages.push(m.message_id));
 
         const detailsMsg = await bot.sendMessage(chatId, text, opts);
+        await cleanupChat(chatId, detailsMsg.message_id);
         session.resultMessages.push(detailsMsg.message_id);
     } else if (images.length === 1) {
         const photoMsg = await bot.sendPhoto(chatId, images[0], { caption: text, ...opts });
+        await cleanupChat(chatId, photoMsg.message_id);
         session.resultMessages.push(photoMsg.message_id);
     } else {
         const textMsg = await bot.sendMessage(chatId, text, opts);
+        await cleanupChat(chatId, textMsg.message_id);
         session.resultMessages.push(textMsg.message_id);
     }
 }
@@ -884,6 +910,7 @@ async function showBookingConfirmation(chatId, telegramId, patientId, queryId) {
         ];
 
         const sentMsg = await bot.sendMessage(chatId, termsText, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
+        await cleanupChat(chatId, sentMsg.message_id);
         if (session) session.lastMessageId = sentMsg.message_id;
 
     } catch (e) {
@@ -1037,54 +1064,77 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
     }
 }
 
-// Global listener for recharge approvals with storm protection
-let isInitialSnapshot = true;
-db.collection('recharge_requests').where('status', '==', 'approved').onSnapshot(snapshot => {
-    if (isInitialSnapshot) {
-        isInitialSnapshot = false;
-        return; // Skip historical approvals on bot startup
-    }
-
+// Global listener for pending notifications from admin dashboard
+// When admin updates balance or approves recharge, a doc is written to 'pending_notifications'.
+// The bot picks it up, sends the Telegram message, and marks it as 'sent'.
+db.collection('pending_notifications').where('status', '==', 'pending').onSnapshot(snapshot => {
     snapshot.docChanges().forEach(async (change) => {
         if (change.type === 'added') {
-            const req = change.doc.data();
-            const telegramId = req.telegramId;
+            const notifDoc = change.doc;
+            const notif = notifDoc.data();
+            const telegramId = notif.telegramId;
             if (!telegramId) return;
 
-            const userRef = db.collection('telegram_users').doc(telegramId);
-            const userDoc = await userRef.get();
-            if (!userDoc.exists) return;
-            const userData = userDoc.data();
+            try {
+                const userRef = db.collection('telegram_users').doc(telegramId);
+                const userDoc = await userRef.get();
+                const userData = userDoc.exists ? userDoc.data() : {};
 
-            // 1. Delete previous bot message (Wizard, Results, etc.)
-            const session = userSessions[telegramId]; // Use telegramId as key for global lookup
-            const targetChatId = telegramId; // Assuming 1:1 chat
-
-            if (userData.lastMessageId) {
-                try { await bot.deleteMessage(targetChatId, userData.lastMessageId); } catch (e) { }
-            }
-
-            // Also delete any result messages if in a search session
-            if (session && session.resultMessages) {
-                for (const mid of session.resultMessages) {
-                    try { await bot.deleteMessage(targetChatId, mid); } catch (e) { }
+                // 1. Cleanup old messages if requested
+                if (notif.cleanupOldMessage && notif.oldMessageId) {
+                    const baseId = parseInt(notif.oldMessageId);
+                    for (let i = 0; i <= 5; i++) {
+                        try {
+                            await bot.deleteMessage(telegramId, (baseId - i).toString());
+                        } catch (e) { /* message might already be deleted */ }
+                    }
                 }
-                session.resultMessages = [];
-            }
 
-            // 2. Send notification
-            const notifyText = `✅ تم قبول طلب التعبئة الخاص بك!\n💰 تم إضافة مبلغ ${req.amount.toLocaleString()} د.ع إلى رصيدك.\n💳 رصيدك الحالي: ${userData.balance.toLocaleString()} د.ع.`;
-            const sentMsg = await bot.sendMessage(targetChatId, notifyText, {
-                reply_markup: {
-                    inline_keyboard: [[{ text: 'العودة للقائمة الرئيسية 🏠', callback_data: 'back_to_main' }]]
+                // Also delete any result messages if user is in a search session
+                const session = userSessions[telegramId];
+                if (session && session.resultMessages) {
+                    for (const mid of session.resultMessages) {
+                        try { await bot.deleteMessage(telegramId, mid); } catch (e) { }
+                    }
+                    session.resultMessages = [];
                 }
-            });
 
-            // 3. Update lastMessageId in Firestore
-            await userRef.update({
-                lastMessageId: sentMsg.message_id,
-                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-            });
+                // 2. Send the notification message
+                const keyboard = {
+                    inline_keyboard: [[{ text: 'العودة للواجهة الرئيسية 🏠', callback_data: 'back_to_main' }]]
+                };
+
+                const sentMsg = await bot.sendMessage(telegramId, notif.text, {
+                    reply_markup: keyboard
+                });
+
+                // 3. Update lastMessageId in user's Firestore doc
+                if (userDoc.exists) {
+                    await userRef.update({
+                        lastMessageId: sentMsg.message_id,
+                        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                }
+
+                // 4. Mark notification as sent (so it won't be processed again)
+                await db.collection('pending_notifications').doc(notifDoc.id).update({
+                    status: 'sent',
+                    sentAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    sentMessageId: sentMsg.message_id
+                });
+
+                console.log(`✅ Notification sent to ${telegramId} (type: ${notif.type})`);
+            } catch (err) {
+                console.error(`❌ Failed to process notification for ${telegramId}:`, err);
+                // Mark as failed so we can debug later
+                try {
+                    await db.collection('pending_notifications').doc(notifDoc.id).update({
+                        status: 'failed',
+                        error: err.message || String(err),
+                        failedAt: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                } catch (e) { }
+            }
         }
     });
 });
