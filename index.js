@@ -931,11 +931,21 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
             const logName = patientData.patientName || 'مريض';
             
             transaction.set(transRef, {
-                telegramId: telegramId,
+                telegramId: telegramId.toString(),
                 type: 'purchase',
                 amount: -price,
                 details: `حجز مريض: ${logName} (${logProv})`,
                 relatedId: patientId,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+
+            // Log to System Activity for Main Admin
+            const systemLogRef = db.collection('system_logs').doc();
+            transaction.set(systemLogRef, {
+                type: 'telegram_booking',
+                details: `حجز مريض: ${logName} (${logProv}) من قبل المستخدم (${userData.username || telegramId})`,
+                userName: userData.username || 'Telegram User',
+                userId: telegramId.toString(),
                 createdAt: firebase.firestore.FieldValue.serverTimestamp()
             });
 
