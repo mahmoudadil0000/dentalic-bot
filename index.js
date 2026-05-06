@@ -896,6 +896,8 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
         const userRef = db.collection('telegram_users').doc(telegramId);
         const patientRef = db.collection('patients').doc(patientId);
 
+        let successData = null;
+
         await db.runTransaction(async (transaction) => {
             const userDoc = await transaction.get(userRef);
             const patientDoc = await transaction.get(patientRef);
@@ -910,38 +912,64 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
             if ((userData.balance || 0) < price) throw "لا يوجد رصيد كافي يرجى التعبئة و المحاولة مجددا";
 
             const newBalance = userData.balance - price;
-            transaction.update(userRef, { balance: newBalance });
+            
+            // Transactional Updates
+            transaction.update(userRef, { 
+                balance: newBalance,
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            
             transaction.update(patientRef, {
                 status: 'Used',
                 bookedBy: telegramId,
                 bookedAt: firebase.firestore.FieldValue.serverTimestamp()
             });
 
-            // Translation helpers for success message
+            // Log Transaction
+            const transRef = db.collection('transactions').doc();
+            const logProv = ARABIC_PROVINCES.find(x => x.id === patientData.governorate)?.label || patientData.governorate || 'غير محدد';
+            const logName = patientData.patientName || 'مريض';
+            
+            transaction.set(transRef, {
+                telegramId: telegramId,
+                type: 'purchase',
+                amount: -price,
+                details: `حجز مريض: ${logName} (${logProv})`,
+                relatedId: patientId,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+
+            // Prepare success data for outside use
             const translateProv = (id) => ARABIC_PROVINCES.find(x => x.id === id)?.label || id;
             const translateCase = (id) => ARABIC_CASES.find(x => x.id === id)?.label || id;
-            const translateDay = (id) => {
-                if (id === 'All Days') return 'جميع الايام';
-                return ARABIC_DAYS.find(x => x.id === id)?.label || id;
+            const translateDay = (id) => (id === 'All Days' ? 'جميع الايام' : ARABIC_DAYS.find(x => x.id === id)?.label || id);
+
+            successData = {
+                price,
+                newBalance,
+                patientName: patientData.patientName || 'غير متوفر',
+                phoneNumbers: (patientData.phoneNumbers || []).join(' | '),
+                location: `${translateProv(patientData.governorate)} | ${patientData.city || 'غير محدد'}`,
+                cases: (patientData.caseTypes || []).map(translateCase).join(' | '),
+                days: (patientData.clinicDays || '').split(', ').map(d => translateDay(d.trim())).join(', '),
+                notes: patientData.notes || 'لا يوجد'
             };
+        });
 
-            const translatedProv = translateProv(patientData.governorate);
-            const translatedCases = (patientData.caseTypes || []).map(translateCase).join(' | ');
-            const translatedDays = (patientData.clinicDays || '').split(', ').map(d => translateDay(d.trim())).join(', ');
-
-            // Success feedback
+        // After transaction success
+        if (successData) {
             const successText = `✅ *تم الحجز بنجاح وتم خصم المبلغ من رصيدك*
 ━━━━━━━━━━━━━━
-💰 *المبلغ المخصوم:* ${price.toLocaleString()} د.ع
-💳 *رصيدك المتبقي:* ${newBalance.toLocaleString()} د.ع
+💰 *المبلغ المخصوم:* ${successData.price.toLocaleString()} د.ع
+💳 *رصيدك المتبقي:* ${successData.newBalance.toLocaleString()} د.ع
 
 💎 *بيانات المريض بالكامل:*
-👤 *اسم المريض:* ${patientData.patientName || 'غير متوفر'}
-☎️ *رقم الهاتف:* \`${(patientData.phoneNumbers || []).join(' | ')}\`
-📍 *المحافظة:* ${translatedProv} | ${patientData.city || 'غير محدد'}
-🦷 *الحالة:* ${translatedCases}
-📅 *ايام التواجد:* ${translatedDays}
-📝 *ملاحظة:* ${patientData.notes || 'لا يوجد'}
+👤 *اسم المريض:* ${successData.patientName}
+☎️ *رقم الهاتف:* \`${successData.phoneNumbers}\`
+📍 *المحافظة:* ${successData.location}
+🦷 *الحالة:* ${successData.cases}
+📅 *ايام التواجد:* ${successData.days}
+📝 *ملاحظة:* ${successData.notes}
 ━━━━━━━━━━━━━━
 ⚠️ *ملاحظة:* يرجى التواصل مع المريض فوراً لترتيب الموعد.`;
 
@@ -952,18 +980,15 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
                 }
             });
 
-            // Update lastMessageId so it can be cleaned up later
-            await userRef.update({
-                lastMessageId: sentMsg.message_id,
-                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-            });
+            // Update lastMessageId
+            await userRef.update({ lastMessageId: sentMsg.message_id });
 
             // Delete terms message
             const session = userSessions[chatId];
             if (session && session.lastMessageId) {
                 bot.deleteMessage(chatId, session.lastMessageId).catch(() => { });
             }
-        });
+        }
 
     } catch (e) {
         console.error(e);
