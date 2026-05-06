@@ -954,11 +954,13 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
             const translateCase = (id) => ARABIC_CASES.find(x => x.id === id)?.label || id;
             const translateDay = (id) => (id === 'All Days' ? 'جميع الايام' : ARABIC_DAYS.find(x => x.id === id)?.label || id);
 
+            const images = patientData.imageUrls || (patientData.imageUrl ? [patientData.imageUrl] : []);
+            
             successData = {
                 price,
                 newBalance,
                 patientName: patientData.patientName || 'غير متوفر',
-                imageUrl: patientData.imageUrl || null,
+                images: images,
                 phoneNumbers: (patientData.phoneNumbers || []).join(' | '),
                 location: `${translateProv(patientData.governorate)} | ${patientData.city || 'غير محدد'}`,
                 cases: (patientData.caseTypes || []).map(translateCase).join(' | '),
@@ -984,7 +986,7 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
 ━━━━━━━━━━━━━━
 ⚠️ *ملاحظة:* يرجى التواصل مع المريض فوراً لترتيب الموعد.`;
 
-            let sentMsg;
+            const session = userSessions[chatId];
             const options = {
                 parse_mode: 'Markdown',
                 reply_markup: {
@@ -992,20 +994,38 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
                 }
             };
 
-            if (successData.imageUrl) {
-                sentMsg = await bot.sendPhoto(chatId, successData.imageUrl, {
+            if (successData.images && successData.images.length > 1) {
+                // Send multiple images as media group
+                const media = successData.images.map(url => ({ type: 'photo', media: url }));
+                const mediaGroup = await bot.sendMediaGroup(chatId, media);
+                if (session) {
+                    mediaGroup.forEach(m => session.resultMessages.push(m.message_id));
+                }
+                
+                // Then send the text with button
+                const detailsMsg = await bot.sendMessage(chatId, successText, options);
+                if (session) session.resultMessages.push(detailsMsg.message_id);
+                
+                // Update lastMessageId to the details message
+                await userRef.update({ lastMessageId: detailsMsg.message_id });
+
+            } else if (successData.images && successData.images.length === 1) {
+                // Send single image with caption
+                const sentMsg = await bot.sendPhoto(chatId, successData.images[0], {
                     caption: successText,
                     ...options
                 });
+                if (session) session.resultMessages.push(sentMsg.message_id);
+                await userRef.update({ lastMessageId: sentMsg.message_id });
+
             } else {
-                sentMsg = await bot.sendMessage(chatId, successText, options);
+                // No images, just text
+                const sentMsg = await bot.sendMessage(chatId, successText, options);
+                if (session) session.resultMessages.push(sentMsg.message_id);
+                await userRef.update({ lastMessageId: sentMsg.message_id });
             }
 
-            // Update lastMessageId
-            await userRef.update({ lastMessageId: sentMsg.message_id });
-
             // Delete terms message
-            const session = userSessions[chatId];
             if (session && session.lastMessageId) {
                 bot.deleteMessage(chatId, session.lastMessageId).catch(() => { });
             }
