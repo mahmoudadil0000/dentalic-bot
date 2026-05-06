@@ -1,0 +1,13 @@
+{
+  "name": "dentalic-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for Dentalic",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "firebase": "^8.10.1",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
