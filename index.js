@@ -958,6 +958,7 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
                 price,
                 newBalance,
                 patientName: patientData.patientName || 'غير متوفر',
+                imageUrl: patientData.imageUrl || null,
                 phoneNumbers: (patientData.phoneNumbers || []).join(' | '),
                 location: `${translateProv(patientData.governorate)} | ${patientData.city || 'غير محدد'}`,
                 cases: (patientData.caseTypes || []).map(translateCase).join(' | '),
@@ -983,12 +984,22 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
 ━━━━━━━━━━━━━━
 ⚠️ *ملاحظة:* يرجى التواصل مع المريض فوراً لترتيب الموعد.`;
 
-            const sentMsg = await bot.sendMessage(chatId, successText, {
+            let sentMsg;
+            const options = {
                 parse_mode: 'Markdown',
                 reply_markup: {
                     inline_keyboard: [[{ text: 'العودة للقائمة الرئيسية 🏠', callback_data: 'back_to_main' }]]
                 }
-            });
+            };
+
+            if (successData.imageUrl) {
+                sentMsg = await bot.sendPhoto(chatId, successData.imageUrl, {
+                    caption: successText,
+                    ...options
+                });
+            } else {
+                sentMsg = await bot.sendMessage(chatId, successText, options);
+            }
 
             // Update lastMessageId
             await userRef.update({ lastMessageId: sentMsg.message_id });
