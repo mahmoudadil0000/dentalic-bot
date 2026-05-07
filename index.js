@@ -38,7 +38,7 @@ const userSessions = {};
 async function safeDelete(chatId, messageId) {
     try {
         await bot.deleteMessage(chatId, messageId);
-    } catch (e) {}
+    } catch (e) { }
 }
 
 async function cleanupChat(chatId, keepMessageId = null, range = 40) {
@@ -279,6 +279,7 @@ bot.on('message', async (msg) => {
             }
 
             const sentMsg = await bot.sendMessage(chatId, newText, currentOptions);
+            await cleanupChat(chatId, sentMsg.message_id);
             await cleanupChat(chatId, sentMsg.message_id);
 
             // Update lastMessageId in Firestore
@@ -739,7 +740,9 @@ async function searchAndShowPatients(chatId, queryId) {
 
     } catch (e) {
         console.error(e);
-        bot.sendMessage(chatId, "حدث خطأ أثناء البحث.");
+        const errMsg = await bot.sendMessage(chatId, "حدث خطأ أثناء البحث.");
+        await cleanupChat(chatId, errMsg.message_id);
+        await cleanupChat(chatId, errMsg.message_id);
     }
 }
 
@@ -803,13 +806,16 @@ async function showPatientResult(chatId) {
 
         const detailsMsg = await bot.sendMessage(chatId, text, opts);
         await cleanupChat(chatId, detailsMsg.message_id);
+        await cleanupChat(chatId, detailsMsg.message_id);
         session.resultMessages.push(detailsMsg.message_id);
     } else if (images.length === 1) {
         const photoMsg = await bot.sendPhoto(chatId, images[0], { caption: text, ...opts });
         await cleanupChat(chatId, photoMsg.message_id);
+        await cleanupChat(chatId, photoMsg.message_id);
         session.resultMessages.push(photoMsg.message_id);
     } else {
         const textMsg = await bot.sendMessage(chatId, text, opts);
+        await cleanupChat(chatId, textMsg.message_id);
         await cleanupChat(chatId, textMsg.message_id);
         session.resultMessages.push(textMsg.message_id);
     }
@@ -911,6 +917,7 @@ async function showBookingConfirmation(chatId, telegramId, patientId, queryId) {
 
         const sentMsg = await bot.sendMessage(chatId, termsText, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
         await cleanupChat(chatId, sentMsg.message_id);
+        await cleanupChat(chatId, sentMsg.message_id);
         if (session) session.lastMessageId = sentMsg.message_id;
 
     } catch (e) {
@@ -939,13 +946,13 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
             if ((userData.balance || 0) < price) throw "لا يوجد رصيد كافي يرجى التعبئة و المحاولة مجددا";
 
             const newBalance = userData.balance - price;
-            
+
             // Transactional Updates
-            transaction.update(userRef, { 
+            transaction.update(userRef, {
                 balance: newBalance,
                 updatedAt: firebase.firestore.FieldValue.serverTimestamp()
             });
-            
+
             transaction.update(patientRef, {
                 status: 'Used',
                 bookedBy: telegramId,
@@ -956,7 +963,7 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
             const transRef = db.collection('transactions').doc();
             const logProv = ARABIC_PROVINCES.find(x => x.id === patientData.governorate)?.label || patientData.governorate || 'غير محدد';
             const logName = patientData.patientName || 'مريض';
-            
+
             transaction.set(transRef, {
                 telegramId: telegramId.toString(),
                 type: 'purchase',
@@ -982,7 +989,7 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
             const translateDay = (id) => (id === 'All Days' ? 'جميع الايام' : ARABIC_DAYS.find(x => x.id === id)?.label || id);
 
             const images = patientData.imageUrls || (patientData.imageUrl ? [patientData.imageUrl] : []);
-            
+
             successData = {
                 price,
                 newBalance,
@@ -1028,11 +1035,13 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
                 if (session) {
                     mediaGroup.forEach(m => session.resultMessages.push(m.message_id));
                 }
-                
+
                 // Then send the text with button
                 const detailsMsg = await bot.sendMessage(chatId, successText, options);
+                await cleanupChat(chatId, detailsMsg.message_id);
+                await cleanupChat(chatId, detailsMsg.message_id);
                 if (session) session.resultMessages.push(detailsMsg.message_id);
-                
+
                 // Update lastMessageId to the details message
                 await userRef.update({ lastMessageId: detailsMsg.message_id });
 
@@ -1042,12 +1051,16 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
                     caption: successText,
                     ...options
                 });
+                await cleanupChat(chatId, sentMsg.message_id);
+                await cleanupChat(chatId, sentMsg.message_id);
                 if (session) session.resultMessages.push(sentMsg.message_id);
                 await userRef.update({ lastMessageId: sentMsg.message_id });
 
             } else {
                 // No images, just text
                 const sentMsg = await bot.sendMessage(chatId, successText, options);
+                await cleanupChat(chatId, sentMsg.message_id);
+                await cleanupChat(chatId, sentMsg.message_id);
                 if (session) session.resultMessages.push(sentMsg.message_id);
                 await userRef.update({ lastMessageId: sentMsg.message_id });
             }
@@ -1107,6 +1120,8 @@ db.collection('pending_notifications').where('status', '==', 'pending').onSnapsh
                 const sentMsg = await bot.sendMessage(telegramId, notif.text, {
                     reply_markup: keyboard
                 });
+                await cleanupChat(telegramId, sentMsg.message_id);
+                await cleanupChat(telegramId, sentMsg.message_id);
 
                 // 3. Update lastMessageId in user's Firestore doc
                 if (userDoc.exists) {
