@@ -35,6 +35,22 @@ const db = firebase.firestore();
 db.settings({ experimentalForceLongPolling: true });
 const userSessions = {};
 
+async function safeDelete(chatId, messageId) {
+    try {
+        await bot.deleteMessage(chatId, messageId);
+    } catch (e) {}
+}
+
+async function cleanupChat(chatId, keepMessageId = null, range = 40) {
+    if (!keepMessageId) return;
+
+    for (let i = 1; i <= range; i++) {
+        await safeDelete(chatId, keepMessageId - i);
+    }
+}
+
+
+
 const ARABIC_PROVINCES = [
     { id: 'Baghdad', label: 'بغداد' }, { id: 'Basra', label: 'بصرة' }, { id: 'Maysan', label: 'ميسان' },
     { id: 'Dhi Qar', label: 'ذي_قار' }, { id: 'Muthanna', label: 'مثنى' }, { id: 'Al-Qādisiyyah', label: 'قادسية' },
@@ -145,6 +161,8 @@ bot.onText(/\/start/, async (msg) => {
 
             // Send new menu and save its ID
             const sentMsg = await bot.sendMessage(chatId, "اهلا بك في بوت حجز المرضى. إختر احد الازرار:", replyKeyboardOptions);
+            await cleanupChat(chatId, sentMsg.message_id);
+            await cleanupChat(chatId, sentMsg.message_id);
             await userRef.update({
                 lastMessageId: sentMsg.message_id,
                 updatedAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -153,6 +171,8 @@ bot.onText(/\/start/, async (msg) => {
         } else {
             // Create new user
             const sentMsg = await bot.sendMessage(chatId, "اهلا بك في بوت حجز المرضى. إختر احد الازرار:", replyKeyboardOptions);
+            await cleanupChat(chatId, sentMsg.message_id);
+            await cleanupChat(chatId, sentMsg.message_id);
 
             await userRef.set({
                 telegramId: telegramId,
@@ -259,6 +279,7 @@ bot.on('message', async (msg) => {
             }
 
             const sentMsg = await bot.sendMessage(chatId, newText, currentOptions);
+            await cleanupChat(chatId, sentMsg.message_id);
 
             // Update lastMessageId in Firestore
             await userRef.update({
@@ -384,6 +405,8 @@ bot.on('callback_query', async (query) => {
 
         try {
             const sentMsg = await bot.sendMessage(chatId, "اهلا بك في بوت حجز المرضى. إختر احد الازرار:", replyKeyboardOptions);
+            await cleanupChat(chatId, sentMsg.message_id);
+            await cleanupChat(chatId, sentMsg.message_id);
             const userRef = db.collection('telegram_users').doc(telegramId);
             await userRef.update({
                 lastMessageId: sentMsg.message_id,
@@ -779,12 +802,15 @@ async function showPatientResult(chatId) {
         mediaGroup.forEach(m => session.resultMessages.push(m.message_id));
 
         const detailsMsg = await bot.sendMessage(chatId, text, opts);
+        await cleanupChat(chatId, detailsMsg.message_id);
         session.resultMessages.push(detailsMsg.message_id);
     } else if (images.length === 1) {
         const photoMsg = await bot.sendPhoto(chatId, images[0], { caption: text, ...opts });
+        await cleanupChat(chatId, photoMsg.message_id);
         session.resultMessages.push(photoMsg.message_id);
     } else {
         const textMsg = await bot.sendMessage(chatId, text, opts);
+        await cleanupChat(chatId, textMsg.message_id);
         session.resultMessages.push(textMsg.message_id);
     }
 }
@@ -884,6 +910,7 @@ async function showBookingConfirmation(chatId, telegramId, patientId, queryId) {
         ];
 
         const sentMsg = await bot.sendMessage(chatId, termsText, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
+        await cleanupChat(chatId, sentMsg.message_id);
         if (session) session.lastMessageId = sentMsg.message_id;
 
     } catch (e) {
@@ -1042,27 +1069,9 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
 // The bot picks it up, sends the Telegram message, and marks it as 'sent'.
 db.collection('pending_notifications').where('status', '==', 'pending').onSnapshot(snapshot => {
     snapshot.docChanges().forEach(async (change) => {
-
-        if (change.type !== 'added') return;
-
-        const notifDoc = change.doc;
-
-        // Prevent duplicate processing
-        if (notifDoc.metadata.hasPendingWrites) return;
-
-        const notif = notifDoc.data();
-
-        // Extra safeguard
-        if (notif.status !== 'pending') return;
-
-        // Lock notification immediately
-        try {
-            await db.collection('pending_notifications').doc(notifDoc.id).update({
-                status: 'processing'
-            });
-        } catch (e) {
-            return;
-        }
+        if (change.type === 'added') {
+            const notifDoc = change.doc;
+            const notif = notifDoc.data();
             const telegramId = notif.telegramId;
             if (!telegramId) return;
 
