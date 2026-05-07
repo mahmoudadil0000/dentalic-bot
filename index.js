@@ -197,16 +197,39 @@ bot.onText(/\/start/, async (msg) => {
     }
 });
 
-// Helper to hide the big bottom keyboard
-async function hideBottomKeyboard(chatId) {
-    try {
-        const tempMsg = await bot.sendMessage(chatId, "جاري التحميل...", {
-            reply_markup: { remove_keyboard: true }
-        });
-        await bot.deleteMessage(chatId, tempMsg.message_id);
-    } catch (e) { }
-}
+ // Helper to hide the big bottom keyboard
+ async function hideBottomKeyboard(chatId) {
+     try {
+         const tempMsg = await bot.sendMessage(chatId, "جاري التحميل...", {
+             reply_markup: { remove_keyboard: true }
+         });
+         await bot.deleteMessage(chatId, tempMsg.message_id);
+     } catch (e) { }
+ }
 
+ // Show the main menu with the big bottom keyboard (used on /start and back navigation)
+ async function showMainMenu(chatId, telegramId) {
+     const replyKeyboardOptions = {
+         reply_markup: {
+             keyboard: [
+                 [{ text: 'حجز مريض 📓' }, { text: 'رصيد البوت 💳' }],
+                 [{ text: 'تواصل مع الدعم 🤖' }]
+             ],
+             resize_keyboard: true,
+             is_persistent: true
+         }
+     };
+     try {
+         const sentMsg = await bot.sendMessage(chatId, "اهلا بك في بوت حجز المرضى. إختر احد الازرار:", replyKeyboardOptions);
+         await cleanupChat(chatId, sentMsg.message_id);
+         await cleanupChat(chatId, sentMsg.message_id);
+         const userRef = db.collection('telegram_users').doc(telegramId);
+         await userRef.update({
+             lastMessageId: sentMsg.message_id,
+             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+         });
+     } catch (e) { }
+ }
 // The "Back" button keyboard for inline menus
 const backButtonOptions = {
     reply_markup: {
@@ -243,7 +266,7 @@ bot.on('message', async (msg) => {
             if (text === 'حجز مريض 📓') {
                 userSessions[chatId] = { province: null, cases: [], days: [], lastMessageId: null };
                 await showProvinceSelection(chatId);
-                await hideBottomKeyboard(chatId);
+                // Removed hideBottomKeyboard to keep main buttons visible
                 try { await bot.deleteMessage(chatId, msg.message_id); } catch (e) { }
                 return;
             }
@@ -287,9 +310,7 @@ bot.on('message', async (msg) => {
                 updatedAt: firebase.firestore.FieldValue.serverTimestamp()
             });
 
-            // Remove the big bottom keyboard
-            await hideBottomKeyboard(chatId);
-
+            // Removed hideBottomKeyboard to keep main buttons visible
         } catch (error) {
             console.error(error);
         }
@@ -382,37 +403,9 @@ bot.on('callback_query', async (query) => {
             await bot.deleteMessage(chatId, messageId);
         } catch (e) { }
 
-        // Delete any result messages (photos, etc.)
-        const session = userSessions[chatId];
-        if (session && session.resultMessages) {
-            for (const mid of session.resultMessages) {
-                try { await bot.deleteMessage(chatId, mid); } catch (e) { }
-            }
-            session.resultMessages = [];
-        }
-
-        // Send the main menu again with the big bottom keyboard
-        const replyKeyboardOptions = {
-            reply_markup: {
-                keyboard: [
-                    [{ text: 'حجز مريض 📓' }, { text: 'رصيد البوت 💳' }],
-                    [{ text: 'تواصل مع الدعم 🤖' }]
-                ],
-                resize_keyboard: true,
-                is_persistent: true
-            }
-        };
-
-        try {
-            const sentMsg = await bot.sendMessage(chatId, "اهلا بك في بوت حجز المرضى. إختر احد الازرار:", replyKeyboardOptions);
-            await cleanupChat(chatId, sentMsg.message_id);
-            await cleanupChat(chatId, sentMsg.message_id);
-            const userRef = db.collection('telegram_users').doc(telegramId);
-            await userRef.update({
-                lastMessageId: sentMsg.message_id,
-                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-            });
-        } catch (e) { }
+        // Show the main menu again with the big bottom keyboard
+        await showMainMenu(chatId, telegramId);
+        return;
     } else if (data === 'check_balance') {
         try {
             const doc = await db.collection('telegram_users').doc(telegramId).get();
