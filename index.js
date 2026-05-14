@@ -1,8 +1,24 @@
 const TelegramBot = require('node-telegram-bot-api');
+const dns = require('dns');
+
+// Force Node.js to prefer IPv4 for DNS lookups (Fixes ENOTFOUND on many local machines/Windows)
+if (dns.setDefaultResultOrder) {
+    dns.setDefaultResultOrder('ipv4first');
+}
+
 const firebase = require('firebase/app');
 require('firebase/firestore');
 const https = require('https');
 const http = require('http');
+
+// Prevent process from crashing on unhandled errors
+process.on('uncaughtException', (err) => {
+    console.error('🔥 CRITICAL: Uncaught Exception:', err.message);
+    if (err.code === 'ENOTFOUND') console.error('📡 Network/DNS Error detected. Please check internet connection.');
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('🔥 CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+});
 
 // Cloudinary Config (unsigned upload)
 const CLOUDINARY_CLOUD_NAME = 'YOUR_CLOUD_NAME'; // Replace with your Cloudinary cloud name
@@ -32,7 +48,36 @@ if (!firebase.apps.length) {
 const db = firebase.firestore();
 
 // Fix for GRPC Connection drops in Node.js
-db.settings({ experimentalForceLongPolling: true });
+try {
+    db.settings({
+        experimentalForceLongPolling: true,
+        merge: true
+    });
+} catch (e) { /* Settings might already be applied */ }
+
+// Monitor Firestore connection state
+db.onSnapshotsInSync(() => {
+    // This is called when local state is in sync with the server
+    console.log("💎 Firestore Connection: Healthy & Synchronized");
+});
+
+// Telegram Bot Error Handlers (Prevents crashes on network blips)
+let isOffline = false;
+bot.on('polling_error', (error) => {
+    if (error.code === 'EFATAL' || error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT') {
+        if (!isOffline) {
+            console.error('📡 Network Error: Connection lost. The bot is waiting for internet to return...');
+            isOffline = true;
+        }
+    } else {
+        console.error('🤖 Polling Error:', error.message || error);
+    }
+});
+
+// Detect when connection is back
+bot.on('webhook_error', (error) => console.error('Webhook Error:', error));
+// Note: node-telegram-bot-api doesn't have a built-in "reconnected" event for polling, 
+// but we can log success on any successful interaction.
 const userSessions = {};
 
 async function safeDelete(chatId, messageId) {
@@ -41,35 +86,54 @@ async function safeDelete(chatId, messageId) {
     } catch (e) { }
 }
 
-async function cleanupChat(chatId, keepMessageId = null, range = 40) {
+async function cleanupChat(chatId, keepMessageId = null, range = 15) {
     if (!keepMessageId) return;
 
+    // Delete messages sequentially with a small delay to avoid crashing the Telegram UI
     for (let i = 1; i <= range; i++) {
-        await safeDelete(chatId, keepMessageId - i);
+        const mid = keepMessageId - i;
+        try {
+            await bot.deleteMessage(chatId, mid);
+            // Small pause between deletions
+            await new Promise(resolve => setTimeout(resolve, 50));
+        } catch (e) { /* ignore deletion errors */ }
     }
 }
 
 
 
 const ARABIC_PROVINCES = [
-    { id: 'Baghdad', label: 'بغداد' }, { id: 'Basra', label: 'بصرة' }, { id: 'Maysan', label: 'ميسان' },
-    { id: 'Dhi Qar', label: 'ذي_قار' }, { id: 'Muthanna', label: 'مثنى' }, { id: 'Al-Qādisiyyah', label: 'قادسية' },
-    { id: 'Babil', label: 'بابل' }, { id: 'Wasit', label: 'واسط' }, { id: 'Najaf', label: 'نجف' },
-    { id: 'Karbala', label: 'كربلاء' }, { id: 'Al Anbar', label: 'أنبار' }, { id: 'Salah Al-Din', label: 'صلاح_الدين' },
-    { id: 'Nineveh', label: 'نينوى' }, { id: 'Kirkuk', label: 'كركوك' }, { id: 'Diyala', label: 'ديالى' }
+    { id: 'Basra', label: 'البصرة' },
+    { id: 'Baghdad', label: 'بغداد' },
+    { id: 'Dhi Qar', label: 'ذي قار' },
+    { id: 'Maysan', label: 'ميسان' },
+    { id: 'Al-Qādisiyyah', label: 'القادسية' },
+    { id: 'Muthanna', label: 'المثنى' },
+    { id: 'Wasit', label: 'واسط' },
+    { id: 'Babil', label: 'بابل' },
+    { id: 'Karbala', label: 'كربلاء' },
+    { id: 'Najaf', label: 'النجف' },
+    { id: 'Saladin', label: 'صلاح الدين' },
+    { id: 'Al Anbar', label: 'الأنبار' },
+    { id: 'Kirkuk', label: 'كركوك' },
+    { id: 'Nineveh', label: 'نينوى' },
+    { id: 'Diyala', label: 'ديالى' }
 ];
 
 const ARABIC_CASES = [
-    { id: 'Ortho', label: 'اورثو' }, { id: 'Medicine', label: 'مدسن' },
-    { id: 'Pedo', label: 'بيدو' }, { id: 'Pros', label: 'بروس' },
-    { id: 'Perio', label: 'بريو' }, { id: 'Operative', label: 'اوبرتف' },
+    { id: 'Ortho', label: 'اورثو' },
+    { id: 'Medicine', label: 'مدسن' },
+    { id: 'Pedo', label: 'بيدو' },
+    { id: 'Pros', label: 'بروس' },
+    { id: 'Perio', label: 'بريو' },
+    { id: 'Operative', label: 'اوبرتف' },
     { id: 'Exo', label: 'اكزو' }
 ];
 
 const ARABIC_DAYS = [
-    { id: 'Sunday', label: 'أحد' }, { id: 'Saturday', label: 'سبت' },
-    { id: 'Tuesday', label: 'ثلاثاء' }, { id: 'Monday', label: 'إثنين' },
-    { id: 'Thursday', label: 'خميس' }, { id: 'Wednesday', label: 'أربعاء' }
+    { id: 'Sunday', label: 'الأحد' }, { id: 'Monday', label: 'الاثنين' },
+    { id: 'Tuesday', label: 'الثلاثاء' }, { id: 'Wednesday', label: 'الأربعاء' },
+    { id: 'Thursday', label: 'الخميس' }, { id: 'Saturday', label: 'السبت' }
 ];
 
 // Upload image from URL to Cloudinary (unsigned)
@@ -152,15 +216,15 @@ bot.onText(/\/start/, async (msg) => {
         if (doc.exists) {
             const userData = doc.data();
 
+            // Send new menu and save its ID
+            const sentMsg = await bot.sendMessage(chatId, "اهلا بك في بوت حجز المرضى. إختر احد الازرار:", replyKeyboardOptions);
+
             // Delete the old menu message from chat to keep it completely clean
             if (userData.lastMessageId) {
                 try {
                     await bot.deleteMessage(chatId, userData.lastMessageId);
                 } catch (e) { }
             }
-
-            // Send new menu and save its ID
-            const sentMsg = await bot.sendMessage(chatId, "اهلا بك في بوت حجز المرضى. إختر احد الازرار:", replyKeyboardOptions);
             await cleanupChat(chatId, sentMsg.message_id);
             await cleanupChat(chatId, sentMsg.message_id);
             await userRef.update({
@@ -197,39 +261,39 @@ bot.onText(/\/start/, async (msg) => {
     }
 });
 
- // Helper to hide the big bottom keyboard
- async function hideBottomKeyboard(chatId) {
-     try {
-         const tempMsg = await bot.sendMessage(chatId, "جاري التحميل...", {
-             reply_markup: { remove_keyboard: true }
-         });
-         await bot.deleteMessage(chatId, tempMsg.message_id);
-     } catch (e) { }
- }
+// Helper to hide the big bottom keyboard
+async function hideBottomKeyboard(chatId) {
+    try {
+        const tempMsg = await bot.sendMessage(chatId, "جاري التحميل...", {
+            reply_markup: { remove_keyboard: true }
+        });
+        await bot.deleteMessage(chatId, tempMsg.message_id);
+    } catch (e) { }
+}
 
- // Show the main menu with the big bottom keyboard (used on /start and back navigation)
- async function showMainMenu(chatId, telegramId) {
-     const replyKeyboardOptions = {
-         reply_markup: {
-             keyboard: [
-                 [{ text: 'حجز مريض 📓' }, { text: 'رصيد البوت 💳' }],
-                 [{ text: 'تواصل مع الدعم 🤖' }]
-             ],
-             resize_keyboard: true,
-             is_persistent: true
-         }
-     };
-     try {
-         const sentMsg = await bot.sendMessage(chatId, "اهلا بك في بوت حجز المرضى. إختر احد الازرار:", replyKeyboardOptions);
-         await cleanupChat(chatId, sentMsg.message_id);
-         await cleanupChat(chatId, sentMsg.message_id);
-         const userRef = db.collection('telegram_users').doc(telegramId);
-         await userRef.update({
-             lastMessageId: sentMsg.message_id,
-             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-         });
-     } catch (e) { }
- }
+// Show the main menu with the big bottom keyboard (used on /start and back navigation)
+async function showMainMenu(chatId, telegramId) {
+    const replyKeyboardOptions = {
+        reply_markup: {
+            keyboard: [
+                [{ text: 'حجز مريض 📓' }, { text: 'رصيد البوت 💳' }],
+                [{ text: 'تواصل مع الدعم 🤖' }]
+            ],
+            resize_keyboard: true,
+            is_persistent: true
+        }
+    };
+    try {
+        const sentMsg = await bot.sendMessage(chatId, "اهلا بك في بوت حجز المرضى. إختر احد الازرار:", replyKeyboardOptions);
+        await cleanupChat(chatId, sentMsg.message_id);
+        await cleanupChat(chatId, sentMsg.message_id);
+        const userRef = db.collection('telegram_users').doc(telegramId);
+        await userRef.update({
+            lastMessageId: sentMsg.message_id,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+    } catch (e) { }
+}
 // The "Back" button keyboard for inline menus
 const backButtonOptions = {
     reply_markup: {
@@ -247,9 +311,6 @@ bot.on('message', async (msg) => {
 
     if (text === 'رصيد البوت 💳' || text === 'حجز مريض 📓' || text === 'تواصل مع الدعم 🤖') {
         try {
-            // Delete user message immediately
-            try { await bot.deleteMessage(chatId, msg.message_id); } catch (e) { }
-
             const userRef = db.collection('telegram_users').doc(telegramId);
             const doc = await userRef.get();
             let lastMessageId = null;
@@ -258,15 +319,14 @@ bot.on('message', async (msg) => {
                 lastMessageId = doc.data().lastMessageId;
             }
 
-            // Delete previous bot message
-            if (lastMessageId) {
-                try { await bot.deleteMessage(chatId, lastMessageId); } catch (e) { }
-            }
-
             if (text === 'حجز مريض 📓') {
                 userSessions[chatId] = { province: null, cases: [], days: [], lastMessageId: null };
                 await showProvinceSelection(chatId);
-                // Removed hideBottomKeyboard to keep main buttons visible
+
+                // Now delete previous messages
+                if (lastMessageId) {
+                    try { await bot.deleteMessage(chatId, lastMessageId); } catch (e) { }
+                }
                 try { await bot.deleteMessage(chatId, msg.message_id); } catch (e) { }
                 return;
             }
@@ -304,6 +364,12 @@ bot.on('message', async (msg) => {
             const sentMsg = await bot.sendMessage(chatId, newText, currentOptions);
             await cleanupChat(chatId, sentMsg.message_id);
 
+            // Now delete previous messages
+            if (lastMessageId) {
+                try { await bot.deleteMessage(chatId, lastMessageId); } catch (e) { }
+            }
+            try { await bot.deleteMessage(chatId, msg.message_id); } catch (e) { }
+
             // Update lastMessageId in Firestore
             await userRef.update({
                 lastMessageId: sentMsg.message_id,
@@ -315,6 +381,114 @@ bot.on('message', async (msg) => {
             console.error(error);
         }
         return; // Important: prevent falling through to generic deletion
+    }
+
+    // 2. Handle State-based Text Inputs (like transfer)
+    if (text && text !== '/start' && text !== 'رصيد البوت 💳' && text !== 'حجز مريض 📓' && text !== 'تواصل مع الدعم 🤖') {
+        try {
+            const userRef = db.collection('telegram_users').doc(telegramId);
+            const doc = await userRef.get();
+            if (doc.exists) {
+                const userData = doc.data();
+                const state = userData.state;
+
+                if (state === 'transfer_awaiting_username') {
+                    const searchUsername = text.replace('@', '').trim();
+                    const usersSnapshot = await db.collection('telegram_users').where('username', '==', searchUsername).get();
+
+                    if (usersSnapshot.empty) {
+                        const errorMsg = await bot.sendMessage(chatId, "❌ لا يمكنك تحويل الرصيد لهذا المستخدم لأنه لم يستخدم البوت من قبل. اخبره بأن يستخدم البوت ثم حاول مجدداً:", {
+                            reply_markup: { inline_keyboard: [[{ text: 'إلغاء ❌', callback_data: 'cancel_transfer' }]] }
+                        });
+                        try { await bot.deleteMessage(chatId, msg.message_id); } catch (e) { }
+                        if (userData.lastMessageId) {
+                            try { await bot.deleteMessage(chatId, userData.lastMessageId); } catch (e) { }
+                        }
+                        await userRef.update({ lastMessageId: errorMsg.message_id });
+                        return;
+                    }
+
+                    const recipientDoc = usersSnapshot.docs[0];
+                    if (recipientDoc.id === telegramId) {
+                        const errorMsg = await bot.sendMessage(chatId, "❌ لا يمكنك تحويل الرصيد لنفسك! اكتب معرف مستخدم آخر:", {
+                            reply_markup: { inline_keyboard: [[{ text: 'إلغاء ❌', callback_data: 'cancel_transfer' }]] }
+                        });
+                        try { await bot.deleteMessage(chatId, msg.message_id); } catch (e) { }
+                        if (userData.lastMessageId) {
+                            try { await bot.deleteMessage(chatId, userData.lastMessageId); } catch (e) { }
+                        }
+                        await userRef.update({ lastMessageId: errorMsg.message_id });
+                        return;
+                    }
+
+                    await userRef.update({
+                        state: 'transfer_awaiting_amount',
+                        transferRecipientId: recipientDoc.id,
+                        transferRecipientName: recipientDoc.data().name || searchUsername,
+                        transferRecipientUsername: searchUsername
+                    });
+
+                    const nextMsg = await bot.sendMessage(chatId, `✅ تم العثور على المستخدم: ${recipientDoc.data().name || searchUsername}\n\nاكتب المبلغ الذي تريد تحويله:`, {
+                        reply_markup: { inline_keyboard: [[{ text: 'إلغاء ❌', callback_data: 'cancel_transfer' }]] }
+                    });
+                    try { await bot.deleteMessage(chatId, msg.message_id); } catch (e) { }
+                    if (userData.lastMessageId) {
+                        try { await bot.deleteMessage(chatId, userData.lastMessageId); } catch (e) { }
+                    }
+                    await userRef.update({ lastMessageId: nextMsg.message_id });
+                    return;
+                }
+                else if (state === 'transfer_awaiting_amount') {
+                    const amount = parseInt(text.trim());
+                    if (isNaN(amount) || amount <= 0) {
+                        const errorMsg = await bot.sendMessage(chatId, "❌ مبلغ غير صالح. يرجى إدخال رقم صحيح أكبر من صفر:", {
+                            reply_markup: { inline_keyboard: [[{ text: 'إلغاء ❌', callback_data: 'cancel_transfer' }]] }
+                        });
+                        try { await bot.deleteMessage(chatId, msg.message_id); } catch (e) { }
+                        if (userData.lastMessageId) {
+                            try { await bot.deleteMessage(chatId, userData.lastMessageId); } catch (e) { }
+                        }
+                        await userRef.update({ lastMessageId: errorMsg.message_id });
+                        return;
+                    }
+
+                    if (amount > (userData.balance || 0)) {
+                        const errorMsg = await bot.sendMessage(chatId, `❌ رصيدك الحالي (${(userData.balance || 0).toLocaleString()} د.ع) لا يكفي لإتمام التحويل.\nاكتب مبلغاً أقل:`, {
+                            reply_markup: { inline_keyboard: [[{ text: 'إلغاء ❌', callback_data: 'cancel_transfer' }]] }
+                        });
+                        try { await bot.deleteMessage(chatId, msg.message_id); } catch (e) { }
+                        if (userData.lastMessageId) {
+                            try { await bot.deleteMessage(chatId, userData.lastMessageId); } catch (e) { }
+                        }
+                        await userRef.update({ lastMessageId: errorMsg.message_id });
+                        return;
+                    }
+
+                    await userRef.update({
+                        state: 'transfer_confirm',
+                        transferAmount: amount
+                    });
+
+                    const confirmMsg = await bot.sendMessage(chatId, `❓ هل انت متأكد من تحويل مبلغ ${amount.toLocaleString()} د.ع الى المستخدم @${userData.transferRecipientUsername}؟`, {
+                        reply_markup: {
+                            inline_keyboard: [
+                                [{ text: 'نعم، متأكد ✅', callback_data: 'confirm_transfer_action' }],
+                                [{ text: 'إلغاء ❌', callback_data: 'cancel_transfer' }]
+                            ]
+                        }
+                    });
+
+                    try { await bot.deleteMessage(chatId, msg.message_id); } catch (e) { }
+                    if (userData.lastMessageId) {
+                        try { await bot.deleteMessage(chatId, userData.lastMessageId); } catch (e) { }
+                    }
+                    await userRef.update({ lastMessageId: confirmMsg.message_id });
+                    return;
+                }
+            }
+        } catch (e) {
+            console.error(e);
+        }
     }
 
     // 1. Handle Photo Uploads for Receipts
@@ -398,13 +572,13 @@ bot.on('callback_query', async (query) => {
     const telegramId = query.from.id.toString();
 
     if (data === 'back_to_main') {
-        // Delete the current inline message
+        // Show the main menu again with the big bottom keyboard
+        await showMainMenu(chatId, telegramId);
+
+        // Delete the current inline message AFTER
         try {
             await bot.deleteMessage(chatId, messageId);
         } catch (e) { }
-
-        // Show the main menu again with the big bottom keyboard
-        await showMainMenu(chatId, telegramId);
         return;
     } else if (data === 'check_balance') {
         try {
@@ -428,7 +602,19 @@ bot.on('callback_query', async (query) => {
                 reply_markup: backToBalanceOptions.reply_markup
             });
         } catch (e) { }
-    } else if (data === 'back_to_balance_menu') {
+    } else if (data === 'back_to_balance_menu' || data === 'cancel_transfer') {
+        if (data === 'cancel_transfer') {
+            try {
+                await db.collection('telegram_users').doc(telegramId).update({
+                    state: 'idle',
+                    transferRecipientId: firebase.firestore.FieldValue.delete(),
+                    transferRecipientName: firebase.firestore.FieldValue.delete(),
+                    transferRecipientUsername: firebase.firestore.FieldValue.delete(),
+                    transferAmount: firebase.firestore.FieldValue.delete()
+                });
+            } catch (e) { }
+        }
+
         const text = `💳 معلومات عن رصيد البوت:
 🔘 رصيد البوت هو الوسيلة الي من خلاله تكدر تحجز المرضى.
 🔘 مجرد امتلاكك لرصيد البوت راح يخليك تكدر تحجز اي مريض مباشرة اذا كنت تحب تكون اول الناس بالحجز و ما تضيع فرصة.
@@ -457,6 +643,106 @@ bot.on('callback_query', async (query) => {
             message_id: messageId,
             reply_markup: options.reply_markup
         });
+    } else if (data === 'transfer_balance') {
+        try {
+            const userDoc = await db.collection('telegram_users').doc(telegramId).get();
+            const balance = userDoc.exists ? (userDoc.data().balance || 0) : 0;
+            if (balance <= 0) {
+                return bot.answerCallbackQuery(query.id, { text: "⚠️ لا يوجد لديك رصيد كافٍ للتحويل!", show_alert: true });
+            }
+
+            await db.collection('telegram_users').doc(telegramId).update({
+                state: 'transfer_awaiting_username',
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+
+            const text = "لمن تريد التحويل؟ اكتب معرف المستخدم (بدون @):";
+            const options = {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: 'إلغاء ❌', callback_data: 'cancel_transfer' }]
+                    ]
+                }
+            };
+            bot.editMessageText(text, {
+                chat_id: chatId,
+                message_id: messageId,
+                reply_markup: options.reply_markup
+            });
+        } catch (e) {
+            console.error(e);
+        }
+    } else if (data === 'confirm_transfer_action') {
+        try {
+            const userRef = db.collection('telegram_users').doc(telegramId);
+
+            const transferResult = await db.runTransaction(async (transaction) => {
+                const userDoc = await transaction.get(userRef);
+                if (!userDoc.exists) throw new Error("المستخدم غير موجود");
+
+                const userData = userDoc.data();
+                if (userData.state !== 'transfer_confirm') throw new Error("الطلب غير صالح");
+
+                const amount = userData.transferAmount;
+                const recipientId = userData.transferRecipientId;
+                const recipientName = userData.transferRecipientName;
+                const recipientUsername = userData.transferRecipientUsername;
+
+                if (!amount || amount <= 0) throw new Error("المبلغ غير صالح");
+                if ((userData.balance || 0) < amount) throw new Error("رصيدك غير كافٍ");
+
+                const recipientRef = db.collection('telegram_users').doc(recipientId);
+                const recipientDoc = await transaction.get(recipientRef);
+
+                if (!recipientDoc.exists) throw new Error("المستلم غير موجود");
+
+                const recipientData = recipientDoc.data();
+
+                transaction.update(userRef, {
+                    balance: (userData.balance || 0) - amount,
+                    state: 'idle',
+                    transferRecipientId: firebase.firestore.FieldValue.delete(),
+                    transferRecipientName: firebase.firestore.FieldValue.delete(),
+                    transferRecipientUsername: firebase.firestore.FieldValue.delete(),
+                    transferAmount: firebase.firestore.FieldValue.delete(),
+                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                transaction.update(recipientRef, {
+                    balance: (recipientData.balance || 0) + amount,
+                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                const transRef = db.collection('transactions').doc();
+                transaction.set(transRef, {
+                    type: 'transfer',
+                    senderId: telegramId,
+                    recipientId: recipientId,
+                    amount: amount,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                return { amount, recipientId, recipientName, recipientUsername };
+            });
+
+            const text = `✅ تم تحويل مبلغ ${transferResult.amount.toLocaleString()} د.ع بنجاح الى @${transferResult.recipientUsername}.\n\nالمبلغ المخصوم من رصيدك هو: ${transferResult.amount.toLocaleString()} د.ع`;
+            bot.editMessageText(text, {
+                chat_id: chatId,
+                message_id: messageId,
+                reply_markup: {
+                    inline_keyboard: [[{ text: 'العودة للمحفظة 💼', callback_data: 'back_to_balance_menu' }]]
+                }
+            });
+
+            try {
+                const recipientText = `🎉 وصلتك حوالة رصيد!\n\nتم استلام مبلغ ${transferResult.amount.toLocaleString()} د.ع من قبل المستخدم @${query.from.username || 'بدون معرف'}.\n\nتم اضافة المبلغ الى رصيدك بنجاح ✅`;
+                bot.sendMessage(transferResult.recipientId, recipientText);
+            } catch (e) { }
+
+        } catch (e) {
+            console.error(e);
+            bot.answerCallbackQuery(query.id, { text: typeof e === 'string' ? e : (e.message || "حدث خطأ أثناء التحويل"), show_alert: true });
+        }
     } else if (data === 'add_balance') {
         try {
             const userRef = db.collection('telegram_users').doc(telegramId);
@@ -701,27 +987,56 @@ async function searchAndShowPatients(chatId, queryId) {
     session.searchingMessageId = searchingMsg.message_id;
 
     try {
-        const snapshot = await db.collection('patients').where('governorate', '==', session.province).where('status', '==', 'Available').get();
+        console.log(`Searching patients in ${session.province} for cases: ${session.cases} and days: ${session.days}`);
+        const snapshot = await db.collection('patients')
+            .where('governorate', '==', session.province)
+            .where('status', '==', 'Available')
+            .get();
+
+        console.log(`Found ${snapshot.size} Available patients in ${session.province}`);
+
         let matches = [];
         snapshot.forEach(doc => {
             const data = doc.data();
-            const hasCase = data.caseTypes.some(c => session.cases.includes(c));
+            const pCases = data.caseTypes || [];
+            const pDaysStr = data.clinicDays || '';
+
+            // 1. Case Filtering
+            const hasCase = Array.isArray(pCases) && pCases.some(c => session.cases.includes(c));
+
+            // 2. Day Filtering
             let hasDay = false;
-            if (session.days.includes('All Days')) { hasDay = true; }
-            else {
-                const pDays = (data.clinicDays || '').split(', ').map(d => d.trim());
+            if (session.days.includes('All Days')) {
+                hasDay = true;
+            } else {
+                const pDays = pDaysStr.split(', ').map(d => d.trim());
                 hasDay = pDays.includes('All Days') || pDays.some(d => session.days.includes(d));
             }
-            if (hasCase && hasDay) matches.push({ id: doc.id, ...data });
+
+            if (hasCase && hasDay) {
+                matches.push({ id: doc.id, ...data });
+            }
         });
+
+        console.log(`Total filtered matches: ${matches.length}`);
 
         // Delete "Searching..." message
         try { await bot.deleteMessage(chatId, session.searchingMessageId); } catch (e) { }
 
         if (matches.length === 0) {
             if (queryId) {
-                bot.answerCallbackQuery(queryId, { text: "لا يوجد 🥲", show_alert: true }).catch(() => { });
+                bot.answerCallbackQuery(queryId, { text: "لا يوجد نتائج حالياً 🥲", show_alert: true }).catch(() => { });
             }
+
+            const noResultsText = `❌ عذراً، لم نجد أي حالات "متاحة" تطابق خياراتك حالياً:
+📍 المحافظة: ${ARABIC_PROVINCES.find(p => p.id === session.province)?.label || session.province}
+🦷 الحالات: ${session.cases.map(c => ARABIC_CASES.find(x => x.id === c)?.label || c).join(', ')}
+📅 الأيام: ${session.days.includes('All Days') ? 'جميع الأيام' : session.days.map(d => ARABIC_DAYS.find(x => x.id === d)?.label || d).join(', ')}
+
+يرجى المحاولة لاحقاً أو تغيير الفلاتر.`;
+
+            const sentMsg = await bot.sendMessage(chatId, noResultsText, backButtonOptions);
+            session.lastMessageId = sentMsg.message_id;
             return;
         }
 
@@ -740,19 +1055,12 @@ async function showPatientResult(chatId) {
     const session = userSessions[chatId];
     const p = session.results[session.currentIndex];
 
-    // Delete previous wizard or terms message
-    if (session.lastMessageId) {
-        try { await bot.deleteMessage(chatId, session.lastMessageId); } catch (e) { }
-        session.lastMessageId = null;
-    }
+    // Keep track of old messages to delete AFTER sending new results
+    const oldLastMessageId = session.lastMessageId;
+    const oldResultMessages = session.resultMessages ? [...session.resultMessages] : [];
 
-    // Delete previous result messages
-    if (session.resultMessages && session.resultMessages.length > 0) {
-        for (const mid of session.resultMessages) {
-            try { await bot.deleteMessage(chatId, mid); } catch (e) { }
-        }
-        session.resultMessages = [];
-    }
+    session.lastMessageId = null;
+    session.resultMessages = [];
 
     const rawPhones = p.phoneNumbers || [];
     let maskedPhones = 'رقم مخفي';
@@ -787,28 +1095,106 @@ async function showPatientResult(chatId) {
     ];
 
     const opts = { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } };
-    const images = p.imageUrls || (p.imageUrl ? [p.imageUrl] : []);
+    let rawImages = [];
+    if (Array.isArray(p.imageUrls)) rawImages = p.imageUrls;
+    else if (typeof p.imageUrls === 'string') rawImages = [p.imageUrls];
+    else if (p.imageUrl) rawImages = [p.imageUrl];
 
-    if (images.length > 1) {
-        const media = images.map(url => ({ type: 'photo', media: url }));
-        const mediaGroup = await bot.sendMediaGroup(chatId, media);
-        mediaGroup.forEach(m => session.resultMessages.push(m.message_id));
+    const images = rawImages.filter(url => {
+        return url && (typeof url === 'string') && (
+            url.startsWith('http') ||
+            url.startsWith('https') ||
+            url.startsWith('//') ||
+            url.startsWith('data:image')
+        );
+    }).map(url => {
+        if (url.startsWith('//')) return `https:${url}`;
+        if (url.startsWith('data:image')) {
+            try {
+                const parts = url.split(',');
+                if (parts.length > 1) {
+                    const base64Data = parts[1];
+                    return Buffer.from(base64Data, 'base64');
+                }
+            } catch (e) {
+                console.error("Failed to parse base64 image:", e.message);
+            }
+        }
+        return url;
+    });
 
-        const detailsMsg = await bot.sendMessage(chatId, text, opts);
-        await cleanupChat(chatId, detailsMsg.message_id);
-        session.resultMessages.push(detailsMsg.message_id);
-    } else if (images.length === 1) {
-        const photoMsg = await bot.sendPhoto(chatId, images[0], { caption: text, ...opts });
-        await cleanupChat(chatId, photoMsg.message_id);
-        session.resultMessages.push(photoMsg.message_id);
-    } else {
-        const textMsg = await bot.sendMessage(chatId, text, opts);
-        await cleanupChat(chatId, textMsg.message_id);
-        session.resultMessages.push(textMsg.message_id);
+    try {
+        if (images.length > 1) {
+            // 1. Send the gallery (photos only)
+            const media = images.map(img => ({ type: 'photo', media: img }));
+            const mediaGroup = await bot.sendMediaGroup(chatId, media);
+            mediaGroup.forEach(m => session.resultMessages.push(m.message_id));
+
+            // 2. Send the details with the keyboard
+            const detailsMsg = await bot.sendMessage(chatId, text, opts);
+            session.resultMessages.push(detailsMsg.message_id);
+        } else if (images.length === 1) {
+            const photoMsg = await bot.sendPhoto(chatId, images[0], { caption: text, ...opts });
+            session.resultMessages.push(photoMsg.message_id);
+        } else {
+            const textMsg = await bot.sendMessage(chatId, text, opts);
+            session.resultMessages.push(textMsg.message_id);
+        }
+    } catch (sendError) {
+        console.error("Error sending patient result:", sendError.message);
+        console.log("Attempting high-reliability fallback for images...");
+
+        try {
+            // Send the text details first
+            const textMsg = await bot.sendMessage(chatId, text, opts);
+            session.resultMessages.push(textMsg.message_id);
+
+            // Try to deliver each image with downloading fallback
+            if (images.length > 0) {
+                for (const img of images) {
+                    try {
+                        if (Buffer.isBuffer(img)) {
+                            // Already a Buffer (from Base64)
+                            const imgMsg = await bot.sendPhoto(chatId, img);
+                            session.resultMessages.push(imgMsg.message_id);
+                        } else {
+                            // It's a URL, try downloading and sending as Buffer (more reliable)
+                            try {
+                                const buffer = await downloadImage(img);
+                                const imgMsg = await bot.sendPhoto(chatId, buffer);
+                                session.resultMessages.push(imgMsg.message_id);
+                            } catch (e) {
+                                // If download fails, try sending URL directly as absolute last resort
+                                const imgMsg = await bot.sendPhoto(chatId, img);
+                                session.resultMessages.push(imgMsg.message_id);
+                            }
+                        }
+                    } catch (e) {
+                        console.error(`Failed to deliver image: ${e.message}`);
+                    }
+                }
+            }
+        } catch (finalError) {
+            console.error("Critical failure in showPatientResult:", finalError.message);
+        }
+    }
+
+    // Now delete old messages AFTER new ones are sent
+    if (oldLastMessageId) {
+        await cleanupChat(chatId, oldLastMessageId);
+        try { await bot.deleteMessage(chatId, oldLastMessageId); } catch (e) { }
+    }
+    if (oldResultMessages && oldResultMessages.length > 0) {
+        for (const mid of oldResultMessages) {
+            try { await bot.deleteMessage(chatId, mid); } catch (e) { }
+        }
     }
 }
 
 async function showBookingConfirmation(chatId, telegramId, patientId, queryId) {
+    // 1. Answer immediately to stop the loading spinner and prevent UI glitches
+    if (queryId) try { await bot.answerCallbackQuery(queryId); } catch (e) { }
+
     try {
         const userDoc = await db.collection('telegram_users').doc(telegramId).get();
         const patientDoc = await db.collection('patients').doc(patientId).get();
@@ -820,23 +1206,12 @@ async function showBookingConfirmation(chatId, telegramId, patientId, queryId) {
         const price = patientData.price || 0;
 
         if ((userData.balance || 0) < price) {
-            return bot.answerCallbackQuery(queryId, {
-                text: "لا يوجد رصيد كافي يرجى التعبئة و المحاولة مجددا",
-                show_alert: true
-            });
+            return bot.sendMessage(chatId, "⚠️ لا يوجد رصيد كافي يرجى التعبئة و المحاولة مجددا");
         }
 
-        // Acknowledge the click to stop loading spinner
-        try { await bot.answerCallbackQuery(queryId); } catch (e) { }
-
-        // Delete previous result messages if they exist
         const session = userSessions[chatId];
-        if (session && session.resultMessages) {
-            for (const mid of session.resultMessages) {
-                try { await bot.deleteMessage(chatId, mid); } catch (e) { }
-            }
-            session.resultMessages = [];
-        }
+        const oldResultMessages = (session && session.resultMessages) ? [...session.resultMessages] : [];
+        if (session) session.resultMessages = [];
 
         const termsText = `⚖️ *قبل الحجز*
 
@@ -905,6 +1280,13 @@ async function showBookingConfirmation(chatId, telegramId, patientId, queryId) {
         const sentMsg = await bot.sendMessage(chatId, termsText, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
         await cleanupChat(chatId, sentMsg.message_id);
         if (session) session.lastMessageId = sentMsg.message_id;
+
+        // Delete previous result messages AFTER showing confirmation
+        if (oldResultMessages.length > 0) {
+            for (const mid of oldResultMessages) {
+                try { await bot.deleteMessage(chatId, mid); } catch (e) { }
+            }
+        }
 
     } catch (e) {
         console.error(e);
@@ -1014,35 +1396,69 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
                 }
             };
 
-            if (successData.images && successData.images.length > 1) {
-                // Send multiple images as media group
-                const media = successData.images.map(url => ({ type: 'photo', media: url }));
-                const mediaGroup = await bot.sendMediaGroup(chatId, media);
-                if (session) {
-                    mediaGroup.forEach(m => session.resultMessages.push(m.message_id));
+            // Robust image delivery for booking success
+            let rawImages = [];
+            if (Array.isArray(successData.images)) rawImages = successData.images;
+            else if (typeof successData.images === 'string') rawImages = [successData.images];
+
+            const processedImages = rawImages.filter(url => {
+                return url && (typeof url === 'string') && (
+                    url.startsWith('http') ||
+                    url.startsWith('https') ||
+                    url.startsWith('//') ||
+                    url.startsWith('data:image')
+                );
+            }).map(url => {
+                if (url.startsWith('//')) return `https:${url}`;
+                if (url.startsWith('data:image')) {
+                    try {
+                        const parts = url.split(',');
+                        if (parts.length > 1) return Buffer.from(parts[1], 'base64');
+                    } catch (e) { console.error("Base64 parse error:", e); }
                 }
+                return url;
+            });
 
-                // Then send the text with button
-                const detailsMsg = await bot.sendMessage(chatId, successText, options);
-                if (session) session.resultMessages.push(detailsMsg.message_id);
+            try {
+                if (processedImages.length > 1) {
+                    // Try media group
+                    try {
+                        const media = processedImages.map(img => ({ type: 'photo', media: img }));
+                        const mediaGroup = await bot.sendMediaGroup(chatId, media);
+                        if (session) mediaGroup.forEach(m => session.resultMessages.push(m.message_id));
 
-                // Update lastMessageId to the details message
-                await userRef.update({ lastMessageId: detailsMsg.message_id });
-
-            } else if (successData.images && successData.images.length === 1) {
-                // Send single image with caption
-                const sentMsg = await bot.sendPhoto(chatId, successData.images[0], {
-                    caption: successText,
-                    ...options
-                });
-                if (session) session.resultMessages.push(sentMsg.message_id);
-                await userRef.update({ lastMessageId: sentMsg.message_id });
-
-            } else {
-                // No images, just text
-                const sentMsg = await bot.sendMessage(chatId, successText, options);
-                if (session) session.resultMessages.push(sentMsg.message_id);
-                await userRef.update({ lastMessageId: sentMsg.message_id });
+                        const detailsMsg = await bot.sendMessage(chatId, successText, options);
+                        if (session) session.resultMessages.push(detailsMsg.message_id);
+                    } catch (mediaError) {
+                        // Fallback to text + individual photos
+                        const detailsMsg = await bot.sendMessage(chatId, successText, options);
+                        if (session) session.resultMessages.push(detailsMsg.message_id);
+                        for (const img of processedImages) {
+                            try {
+                                const buffer = Buffer.isBuffer(img) ? img : (img.startsWith('http') ? await downloadImage(img) : img);
+                                const imgMsg = await bot.sendPhoto(chatId, buffer);
+                                if (session) session.resultMessages.push(imgMsg.message_id);
+                            } catch (e) { console.log("Success image fallback fail:", e.message); }
+                        }
+                    }
+                } else if (processedImages.length === 1) {
+                    try {
+                        const img = processedImages[0];
+                        const buffer = Buffer.isBuffer(img) ? img : (img.startsWith('http') ? await downloadImage(img) : img);
+                        const sentMsg = await bot.sendPhoto(chatId, buffer, { caption: successText, ...options });
+                        if (session) session.resultMessages.push(sentMsg.message_id);
+                    } catch (photoError) {
+                        const sentMsg = await bot.sendMessage(chatId, successText, options);
+                        if (session) session.resultMessages.push(sentMsg.message_id);
+                    }
+                } else {
+                    const sentMsg = await bot.sendMessage(chatId, successText, options);
+                    if (session) session.resultMessages.push(sentMsg.message_id);
+                }
+            } catch (deliveryError) {
+                console.error("Booking success delivery error:", deliveryError);
+                // Last ditch effort: send just text
+                await bot.sendMessage(chatId, successText, options).catch(e => console.error("Final fail:", e));
             }
 
             // Delete terms message
@@ -1131,5 +1547,21 @@ db.collection('pending_notifications').where('status', '==', 'pending').onSnapsh
         }
     });
 });
+
+// Helper to download image from URL to Buffer
+function downloadImage(url) {
+    return new Promise((resolve, reject) => {
+        const client = url.startsWith('https') ? https : http;
+        client.get(url, (res) => {
+            if (res.statusCode !== 200) {
+                reject(new Error(`Status ${res.statusCode}`));
+                return;
+            }
+            const data = [];
+            res.on('data', (chunk) => data.push(chunk));
+            res.on('end', () => resolve(Buffer.concat(data)));
+        }).on('error', reject);
+    });
+}
 
 console.log("Bot is running...");
