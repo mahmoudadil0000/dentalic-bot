@@ -11,25 +11,6 @@ require('firebase/firestore');
 const https = require('https');
 const http = require('http');
 
-// Prevent process from crashing on unhandled errors
-process.on('uncaughtException', (err) => {
-    console.error('🔥 CRITICAL: Uncaught Exception:', err.message);
-    if (err.code === 'ENOTFOUND') console.error('📡 Network/DNS Error detected. Please check internet connection.');
-});
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('🔥 CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-// Cloudinary Config (unsigned upload)
-const CLOUDINARY_CLOUD_NAME = 'YOUR_CLOUD_NAME'; // Replace with your Cloudinary cloud name
-const CLOUDINARY_UPLOAD_PRESET = 'YOUR_UPLOAD_PRESET'; // Replace with your unsigned upload preset
-
-// Replace with your actual bot token from @BotFather
-const token = '8800673686:AAHUbjAoGjy-FzzVcahqklVU-0g3BhYypxQ';
-
-// Initialize the Telegram Bot
-const bot = new TelegramBot(token, { polling: true });
-
 // Firebase Configuration from your web project
 const firebaseConfig = {
     apiKey: "AIzaSyAKevus2EJpkIaHeuR3DTutSgUOzkZunQg",
@@ -46,6 +27,265 @@ if (!firebase.apps.length) {
     firebase.initializeApp(firebaseConfig);
 }
 const db = firebase.firestore();
+
+// Prevent process from crashing on unhandled errors
+process.on('uncaughtException', (err) => {
+    console.error('🔥 CRITICAL: Uncaught Exception:', err.message);
+    if (err.code === 'ENOTFOUND') console.error('📡 Network/DNS Error detected. Please check internet connection.');
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('🔥 CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Cloudinary Config (unsigned upload)
+const CLOUDINARY_CLOUD_NAME = 'dpda74vzy'; 
+const CLOUDINARY_UPLOAD_PRESET = 'patient'; 
+
+// Replace with your actual bot token from @BotFather
+const token = '8800673686:AAHUbjAoGjy-FzzVcahqklVU-0g3BhYypxQ';
+
+// Initialize the Telegram Bot
+const bot = new TelegramBot(token, { polling: true });
+
+// --- SECOND BOT: Admin Notification Bot ---
+// This bot is dedicated solely to notifying admins of new recharge requests.
+const notifyBotToken = '8804660615:AAEmbj1wODn0NXR9eM5P5zAB-U5IKGna_wA';
+const notifyBot = new TelegramBot(notifyBotToken, { polling: true });
+
+// --- THIRD BOT: Audit & Balance Bot ---
+// This bot notifies admins of ANY balance changes (transfers, manual adjustments, bookings, etc.)
+const auditBotToken = '8619197210:AAEu3FWgouxpXiGAqWxSPijvg3TQzb8zuv4';
+const auditBot = new TelegramBot(auditBotToken, { polling: true });
+
+
+
+// --- HANDLERS & LISTENERS ---
+
+// Admin registration for the audit bot
+auditBot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
+    const name = msg.from.first_name + (msg.from.last_name ? ' ' + msg.from.last_name : '');
+    try {
+        await db.collection('audit_admins').doc(chatId.toString()).set({
+            chatId: chatId,
+            name: name,
+            username: msg.from.username || 'No Username',
+            registeredAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        auditBot.sendMessage(chatId, "✅ تم تسجيلك بنجاح لاستلام إشعارات حركات الرصيد!");
+        console.log(`✅ Audit Admin registered: ${chatId}`);
+    } catch (e) { console.error("Audit admin registration error:", e); }
+});
+
+// Test command for Audit Bot
+auditBot.onText(/\/test/, (msg) => {
+    auditBot.sendMessage(msg.chat.id, "📊 بوت مراقبة الرصيد يعمل!").catch(e => console.error(e));
+});
+
+// Diagnostic command for Audit Bot
+auditBot.onText(/\/check_audit/, async (msg) => {
+    try {
+        const snap = await db.collection('audit_logs').get();
+        auditBot.sendMessage(msg.chat.id, `📊 إجمالي عدد السجلات في النظام: ${snap.size}`);
+    } catch (e) {
+        auditBot.sendMessage(msg.chat.id, "❌ خطأ في فحص السجلات: " + e.message);
+    }
+});
+
+// Manual Log Check
+auditBot.onText(/\/checklogs/, async (msg) => {
+    try {
+        const snap = await db.collection('audit_logs').orderBy('createdAt', 'desc').limit(5).get();
+        if (snap.empty) {
+            return auditBot.sendMessage(msg.chat.id, "📭 لا توجد أي سجلات حركات رصيد في قاعدة البيانات.");
+        }
+        let text = "📋 *آخر 5 حركات رصيد:*\n\n";
+        snap.forEach(doc => {
+            const l = doc.data();
+            text += `🔹 ${l.typeLabel || l.type}: ${l.amount > 0 ? '+' : ''}${l.amount} لـ ${l.targetName}\n`;
+        });
+        auditBot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
+    } catch (e) {
+        auditBot.sendMessage(msg.chat.id, "❌ فشل جلب السجلات: " + e.message);
+    }
+});
+
+// Startup Verification for Audit Bot
+setTimeout(async () => {
+    try {
+        const adminsSnap = await db.collection('audit_admins').get();
+        console.log(`🤖 Startup Check: Found ${adminsSnap.size} audit admins.`);
+        adminsSnap.forEach(adminDoc => {
+            auditBot.sendMessage(adminDoc.id, "🤖 نظام مراقبة الرصيد متصل وجاهز الآن!").catch(() => {});
+        });
+    } catch (e) { console.error("Startup check failed:", e); }
+}, 3000);
+
+// Admin registration for the notification bot
+notifyBot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
+    const name = msg.from.first_name + (msg.from.last_name ? ' ' + msg.from.last_name : '');
+    console.log(`📡 Registration attempt on Notify Bot from: ${name} (${chatId})`);
+    
+    try {
+        await db.collection('notification_admins').doc(chatId.toString()).set({
+            chatId: chatId,
+            name: name,
+            username: msg.from.username || 'No Username',
+            registeredAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        notifyBot.sendMessage(chatId, "✅ تم تسجيلك بنجاح لاستلام إشعارات طلبات التعبئة!");
+        console.log(`✅ Admin registered successfully: ${chatId}`);
+    } catch (e) { 
+        console.error("❌ Notify admin registration error:", e);
+        notifyBot.sendMessage(chatId, "❌ حدث خطأ أثناء التسجيل. يرجى المحاولة لاحقاً.").catch(() => {});
+    }
+});
+
+// --- AUDIT LOG LISTENER ---
+// Listen for any NEW entry in 'audit_logs' and send to all audit admins.
+// Uses a startup timestamp to skip all historical entries on bot restart.
+const auditListenerStartTime = Date.now();
+let isFirstAuditSnapshot = true;
+db.collection('audit_logs').onSnapshot(async (snapshot) => {
+    // Skip the very first snapshot — it contains ALL existing docs as 'added'
+    if (isFirstAuditSnapshot) {
+        isFirstAuditSnapshot = false;
+        console.log(`📊 Audit Listener: Initial snapshot with ${snapshot.docChanges().length} existing entries (skipped).`);
+        return;
+    }
+
+    const changes = snapshot.docChanges();
+    if (changes.length > 0) {
+        console.log(`📊 Audit Listener: ${changes.length} changes detected.`);
+    }
+    changes.forEach(async (change) => {
+        if (change.type === 'added') {
+            const log = change.doc.data();
+            const logId = change.doc.id;
+
+            // Extra safety: skip entries older than 60 seconds before bot start
+            if (log.createdAt && log.createdAt.toDate) {
+                const entryTime = log.createdAt.toDate().getTime();
+                if (entryTime < auditListenerStartTime - 60000) {
+                    console.log(`⏭️ Skipping old audit entry [${logId}]`);
+                    return;
+                }
+            }
+
+            console.log(`📊 Audit Entry Detected: [${logId}] Type=${log.typeLabel || log.type}`);
+            
+            try {
+                const adminsSnap = await db.collection('audit_admins').get();
+                if (adminsSnap.empty) {
+                    console.log("⚠️ No audit admins registered.");
+                    return;
+                }
+
+                const amount = log.amount || 0;
+                const newBalance = log.newBalance || 0;
+                const typeLabel = log.typeLabel || log.type || 'حركة غير معروفة';
+                const targetName = log.targetName || 'مستخدم غير معروف';
+                const targetUsername = log.targetUsername ? `@${log.targetUsername}` : 'بدون معرف';
+                const actorName = log.actorName || 'النظام';
+
+                const auditText = `📝 *تنبيه حركة رصيد:*\n\n` +
+                                 `ℹ️ *النوع:* ${typeLabel}\n` +
+                                 `👤 *المستهدف:* ${targetName} (${targetUsername.replace(/_/g, '\\_')})\n` +
+                                 `💰 *المقدار:* ${amount > 0 ? '+' : ''}${amount.toLocaleString()} د.ع\n` +
+                                 `💳 *الرصيد الجديد:* ${newBalance.toLocaleString()} د.ع\n` +
+                                 `🛠 *بواسطة:* ${actorName}\n\n` +
+                                 `📅 ${new Date().toLocaleString('ar-EG')}`;
+
+                console.log(`📡 Sending audit notification to ${adminsSnap.size} admins...`);
+                adminsSnap.forEach(adminDoc => {
+                    auditBot.sendMessage(adminDoc.id, auditText, { parse_mode: 'Markdown' })
+                        .then(() => console.log(`✅ Audit notification sent to ${adminDoc.id}`))
+                        .catch(err => console.error(`❌ Audit notify fail for ${adminDoc.id}:`, err.message));
+                });
+            } catch (err) { console.error("❌ Audit loop processing error:", err); }
+        }
+    });
+});
+
+// Add an error handler for the notification bot
+notifyBot.on('polling_error', (error) => {
+    console.error('⚠️ Notify Bot Polling Error:', error.message || error);
+});
+
+// Test command to verify the bot is alive
+notifyBot.onText(/\/test/, (msg) => {
+    notifyBot.sendMessage(msg.chat.id, "🤖 بوت الإشعارات يعمل وجاهز! أرسل /start للتسجيل.").catch(e => console.error(e));
+});
+
+// --- REAL-TIME NOTIFICATION LISTENER ---
+// This listener monitors Firestore for new recharge requests and sends them to admins.
+db.collection('recharge_requests').where('status', '==', 'pending').onSnapshot(async (snapshot) => {
+    snapshot.docChanges().forEach(async (change) => {
+        if (change.type === 'added') {
+            const req = change.doc.data();
+            const reqId = change.doc.id;
+            console.log(`🔍 Firestore Listener: New pending request detected [${reqId}]`);
+
+            // Prevent notifying for old requests (older than 5 minutes)
+            const requestTime = req.createdAt ? req.createdAt.toDate().getTime() : Date.now();
+            const timeDiff = Date.now() - requestTime;
+            
+            if (timeDiff > 300000) {
+                console.log(`⏭️ Skipping old request [${reqId}] (Time diff: ${Math.round(timeDiff/1000)}s)`);
+                return;
+            }
+
+            try {
+                const adminsSnap = await db.collection('notification_admins').get();
+                if (adminsSnap.empty) {
+                    console.log(`⚠️ No admins found to notify for request [${reqId}].`);
+                    return;
+                }
+
+                console.log(`📢 Notifying ${adminsSnap.size} admins about request [${reqId}]...`);
+
+                const amount = req.amount || 0;
+                const requesterName = req.name || 'مستخدم غير معروف';
+                // Escape underscores for Markdown parsing
+                const requesterUsername = (req.username ? `@${req.username}` : 'بدون معرف').replace(/_/g, '\\_');
+                const receiptUrl = req.receiptUrl;
+
+                // Get current total pending requests count
+                const pendingRequestsSnap = await db.collection('recharge_requests').where('status', '==', 'pending').get();
+                const pendingCount = pendingRequestsSnap.size;
+
+                const notificationText = `🔔 *طلب تعبئة رصيد جديد!*\n\n` +
+                                       `👤 *المستلم:* ${requesterName} (${requesterUsername})\n` +
+                                       `💰 *المبلغ المطلوب:* ${amount.toLocaleString()} د.ع\n\n` +
+                                       `📊 *إجمالي الطلبات المعلقة:* ${pendingCount}\n\n` +
+                                       `⚙️ يرجى مراجعة لوحة التحكم لمعالجة الطلب.`;
+
+                adminsSnap.forEach(async (adminDoc) => {
+                    const adminId = adminDoc.id;
+                    try {
+                        if (receiptUrl) {
+                            console.log(`📥 Downloading receipt for admin ${adminId}...`);
+                            const photoBuffer = await downloadImage(receiptUrl);
+                            await notifyBot.sendPhoto(adminId, photoBuffer, {
+                                caption: notificationText,
+                                parse_mode: 'Markdown'
+                            });
+                        } else {
+                            await notifyBot.sendMessage(adminId, notificationText, { parse_mode: 'Markdown' });
+                        }
+                        console.log(`✅ Sent notification to admin: ${adminId}`);
+                    } catch (err) {
+                        console.error(`❌ Photo delivery fail for ${adminId}:`, err.message);
+                        await notifyBot.sendMessage(adminId, notificationText + "\n\n⚠️ (لم نتمكن من تحميل الصورة في تليجرام، يرجى رؤيتها في الموقع)", { parse_mode: 'Markdown' }).catch(() => {});
+                    }
+                });
+            } catch (err) {
+                console.error("❌ Error in notification loop:", err);
+            }
+        }
+    });
+});
 
 // Fix for GRPC Connection drops in Node.js
 try {
@@ -151,7 +391,7 @@ function uploadToCloudinary(imageUrl) {
                 const postData = JSON.stringify({
                     file: base64Image,
                     upload_preset: CLOUDINARY_UPLOAD_PRESET,
-                    folder: 'recharge_receipts'
+                    folder: 'patients'
                 });
 
                 const options = {
@@ -516,7 +756,7 @@ bot.on('message', async (msg) => {
                 }
 
                 // Save the recharge request to Firestore
-                const reqRef = await db.collection('recharge_requests').add({
+                await db.collection('recharge_requests').add({
                     telegramId: telegramId,
                     username: userData.username,
                     name: userData.name,
@@ -535,6 +775,8 @@ bot.on('message', async (msg) => {
                     lastRechargeRequestAt: firebase.firestore.FieldValue.serverTimestamp(),
                     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                 });
+
+
 
                 // Delete the user's photo message to keep chat clean
                 try { await bot.deleteMessage(chatId, msg.message_id); } catch (e) { }
@@ -698,8 +940,27 @@ bot.on('callback_query', async (query) => {
 
                 const recipientData = recipientDoc.data();
 
+                // Update Firestore for both
+                transaction.update(userRef, { balance: (userData.balance || 0) - amount });
+                transaction.update(recipientRef, { balance: (recipientData.balance || 0) + amount });
+
+                // Log audit for transfer
+                const auditRef = db.collection('audit_logs').doc();
+                transaction.set(auditRef, {
+                    type: 'transfer',
+                    typeLabel: 'تحويل رصيد (P2P)',
+                    targetName: recipientData.name,
+                    targetUsername: recipientData.username,
+                    targetId: recipientId,
+                    amount: amount,
+                    newBalance: (recipientData.balance || 0) + amount,
+                    actorName: userData.name,
+                    actorUsername: userData.username,
+                    actorId: telegramId,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
                 transaction.update(userRef, {
-                    balance: (userData.balance || 0) - amount,
                     state: 'idle',
                     transferRecipientId: firebase.firestore.FieldValue.delete(),
                     transferRecipientName: firebase.firestore.FieldValue.delete(),
@@ -709,7 +970,6 @@ bot.on('callback_query', async (query) => {
                 });
 
                 transaction.update(recipientRef, {
-                    balance: (recipientData.balance || 0) + amount,
                     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                 });
 
@@ -1315,11 +1575,26 @@ async function handleBooking(chatId, telegramId, patientId, queryId) {
 
             const newBalance = userData.balance - price;
 
-            // Transactional Updates
+            // Deduct balance and increment bookings count
             transaction.update(userRef, {
                 balance: newBalance,
-                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                bookingsCount: firebase.firestore.FieldValue.increment(1)
             });
+
+            // Log audit for booking deduction
+            const auditRef = db.collection('audit_logs').doc();
+            transaction.set(auditRef, {
+                type: 'booking_deduction',
+                typeLabel: 'خصم حجز مريض',
+                targetName: userData.name || telegramId,
+                targetUsername: userData.username || '',
+                targetId: telegramId,
+                amount: -price,
+                newBalance: newBalance,
+                actorName: 'نظام الحجز',
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            console.log(`✅ Booking audit log scheduled for [${telegramId}]`);
 
             transaction.update(patientRef, {
                 status: 'Used',
@@ -1565,3 +1840,5 @@ function downloadImage(url) {
 }
 
 console.log("Bot is running...");
+
+
