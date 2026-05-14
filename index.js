@@ -25,7 +25,7 @@ const CLOUDINARY_CLOUD_NAME = 'YOUR_CLOUD_NAME'; // Replace with your Cloudinary
 const CLOUDINARY_UPLOAD_PRESET = 'YOUR_UPLOAD_PRESET'; // Replace with your unsigned upload preset
 
 // Replace with your actual bot token from @BotFather
-const token = '8768017501:AAE_PstdIcAHbaf4OevIXvYI3D4Zac2STP0';
+const token = '8800673686:AAHUbjAoGjy-FzzVcahqklVU-0g3BhYypxQ';
 
 // Initialize the Telegram Bot
 const bot = new TelegramBot(token, { polling: true });
